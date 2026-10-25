@@ -27,6 +27,8 @@
   }
   #ui button:hover, #ui button:focus-visible { color: #fff6d8; border-color: rgba(255,244,214,.8); outline: none; background: rgba(0,0,0,.7); }
   #hint { transition: opacity 1.2s; text-align: right; }
+  .wall #ui { display: none; }
+  .wall canvas { cursor: default; }
   #hint.hide { opacity: 0; }
 </style>
 </head>
@@ -61,6 +63,17 @@
   };
   const hash = n => { n = Math.imul(n ^ n >>> 15, 0x85ebca6b); n = Math.imul(n ^ n >>> 13, 0xc2b2ae35); return ((n ^ n >>> 16) >>> 0) / 4294967296; };
 
+  /* ============ modes (URL params) ============
+     index.html?wall   -> wallpaper mode: low power, no buttons, skips the intro
+     index.html?lite   -> low power only
+     &fps=15           -> override the animation speed                          */
+  const Q = new URLSearchParams(location.search);
+  const WALL = Q.has("wall");
+  const LITE = WALL || Q.has("lite");
+  const FPS = clamp(+Q.get("fps") || (LITE ? 24 : 30), 5, 60);
+  const IDLE_FPS = LITE ? 10 : 20;      // used when nothing is being touched and the intro is done
+  if (WALL) document.documentElement.classList.add("wall");
+
   /* ============ canvases / layout ============ */
   const WW = 600, WH = 780, CELL_RATIO = 1.667;
   const canvas = document.getElementById("c");
@@ -73,8 +86,8 @@
 
   function layout() {
     cssW = innerWidth; cssH = innerHeight;
-    dpr = Math.min(devicePixelRatio || 1, 2);
-    ROWS = clamp(Math.round(cssH / 8), 90, 125);
+    dpr = LITE ? 1 : Math.min(devicePixelRatio || 1, 2);
+    ROWS = LITE ? clamp(Math.round(cssH / 9), 80, 110) : clamp(Math.round(cssH / 8), 90, 125);
     cellH = cssH / ROWS; cellW = cellH / CELL_RATIO;
     COLS = Math.ceil(cssW / cellW);
     canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
@@ -89,7 +102,7 @@
     stars = Array.from({ length: Math.round(COLS * ROWS / 230) }, () => ({
       x: R() * cssW, y: R() * cssH, p: R() * TAU, s: .4 + R() * 1.6, g: R() < .22 ? "*" : R() < .5 ? "+" : "."
     }));
-    flies = Array.from({ length: Math.round(clamp(cssW * cssH / 14000, 30, 90)) }, () => newFly(R, true));
+    flies = Array.from({ length: Math.round(clamp(cssW * cssH / (LITE ? 40000 : 14000), 12, 90)) }, () => newFly(R, true));
   }
   function newFly(R, anywhere) {
     return { x: R() * cssW, y: anywhere ? R() * cssH : cssH + 10, vy: 6 + R() * 16, ph: R() * TAU, sz: 1.1 + R() * 1.2, life: -1 };
@@ -305,7 +318,7 @@
     c.restore();
 
     // shooting star
-    if (t > nextShoot && !shoot) {
+    if (!LITE && t > nextShoot && !shoot) {
       shoot = { x: cssW * (.5 + Math.random() * .5), y: cssH * Math.random() * .3, t: t, a: rad(145 + Math.random() * 15), v: cssH * 1.2 };
       nextShoot = t + 5 + Math.random() * 7;
     }
@@ -426,7 +439,6 @@
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.font = `700 ${(cellHd * 1.02).toFixed(1)}px "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    buckets.clear();
 
     const tick = Math.floor(t * 7);
     const mR = Math.min(cssW, cssH) * .16, mRc = mR / cellW + 1;
@@ -488,6 +500,7 @@
     for (const [key, arr] of buckets) {
       ctx.fillStyle = `rgb(${(key >> 8 & 15) * 17},${(key >> 4 & 15) * 17},${(key & 15) * 17})`;
       for (let k = 0; k < arr.length; k += 3) ctx.fillText(arr[k + 2], arr[k], arr[k + 1]);
+      arr.length = 0;
     }
 
     for (const s of stars) {
@@ -575,7 +588,7 @@
   /* ============ events / UI ============ */
   const hint = document.getElementById("hint");
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let t0 = performance.now(), prev = 0, last = 0, touched = 0;
+  let t0 = performance.now() - (WALL ? 11000 : 0), prev = 0, last = 0, touched = 0, lastInput = -1e9;
 
   function regrow() {
     t0 = performance.now(); birth.fill(-1); petalsFalling = []; bursts = []; waves = [];
@@ -586,12 +599,15 @@
     document.getElementById("bTheme").textContent = "color: " + THEMES[theme];
   }
 
-  canvas.addEventListener("pointermove", e => {
+  addEventListener("pointermove", e => {
+    lastInput = performance.now();
     mouse.x = e.clientX; mouse.y = e.clientY; mouse.on = true;
     windTarget = clamp((e.clientX - cx0) / (cssW * .5), -1, 1) * .8;
   });
-  canvas.addEventListener("pointerleave", () => { mouse.on = false; windTarget = 0; });
-  canvas.addEventListener("pointerdown", e => {
+  document.addEventListener("pointerleave", () => { mouse.on = false; windTarget = 0; });
+  addEventListener("pointerdown", e => {
+    if (e.target.closest && e.target.closest("#ui")) return;
+    lastInput = performance.now();
     mouse.x = e.clientX; mouse.y = e.clientY; mouse.on = true;
     waves.push({ x: e.clientX, y: e.clientY, r: 0, a: 1 });
     const wx = (e.clientX - cx0 - parNow) / (S * camNow) + 300, wy = (e.clientY - cy0) / (S * camNow) + 420;
@@ -614,7 +630,8 @@
   /* ============ loop ============ */
   function frame(now) {
     requestAnimationFrame(frame);
-    if (now - last < 33) return;
+    const idle = ((now - t0) / 1000 > 12) && (now - lastInput > 4000);
+    if (now - last < 1000 / (idle ? IDLE_FPS : FPS) - 2) return;
     last = now;
     const dt = Math.min(.1, (now - (prev || now)) / 1000); prev = now;
     const t = reduce ? 12 : (now - t0) / 1000;
@@ -627,7 +644,7 @@
 
   hint.classList.add("hide");
   build(); layout();
-  setTimeout(() => hint.classList.remove("hide"), 4500);
+  if (!WALL) setTimeout(() => hint.classList.remove("hide"), 4500);
   requestAnimationFrame(frame);
 })();
 </script>
